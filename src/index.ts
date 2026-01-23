@@ -5,6 +5,40 @@ import { createIcosphere } from './icosphere';
 // Grab HTML slider for ocean surface area
 const oceanSAPercentSlider = document.getElementById('oceanSAPercent') as HTMLInputElement;
 const oceanSAPercentValue = document.getElementById('oceanSAPercentValue') as HTMLElement;
+// Seed UI elements
+const seedDisplay = document.getElementById('current-seed') as HTMLElement;
+const seedInput = document.getElementById('seed-input') as HTMLInputElement;
+const generateSeedBtn = document.getElementById('generate-seed-btn') as HTMLButtonElement;
+const seedError = document.getElementById('seed-error') as HTMLElement;
+
+// Seed helpers
+const SEED_MIN = 0;
+const SEED_MAX = 2_147_483_647;
+function randomSeed(): number {
+
+  if (window.crypto?.getRandomValues) {
+    const a = new Uint32Array(1);
+    window.crypto.getRandomValues(a);
+    return a[0] & SEED_MAX;  //bitwise will ensure first bit is 0. (0 is pos number, 1 is neg)
+  }
+  return Math.floor(Math.random() * (SEED_MAX + 1));
+}
+function isValidSeed(val: string): boolean {
+  if (!/^[0-9]+$/.test(val)) return false;
+  const n = Number(val);
+  return Number.isInteger(n) && n >= SEED_MIN && n <= SEED_MAX;
+}
+function showSeedError(msg: string) {
+  seedError.textContent = msg;
+}
+function clearSeedError() {
+  seedError.textContent = '';
+}
+
+// Disable/enable Generate button
+function setGenerateBtnEnabled(enabled: boolean) {
+  generateSeedBtn.disabled = !enabled;
+}
 
 /**
  * Computes the inverse of the cumulative distribution function (CDF) (Abramowitz-Stegun approximation)
@@ -206,7 +240,13 @@ function rawNoiseOnSphere(x: number, y: number, z: number, noise: SimplexNoise3D
 
 // WebGPU + Sphere mesh setup
 
-async function runWebGPU() {
+
+// Main terraforming/visualization logic, parameterized by seed
+async function terraformWithSeed(seed: number) {
+  setGenerateBtnEnabled(false);
+  clearSeedError();
+  seedDisplay.textContent = String(seed);
+
   const gpu = (navigator as any).gpu as GPU | undefined;
   if (!gpu) {
     document.body.innerHTML = 'WebGPU not supported.';
@@ -226,14 +266,6 @@ async function runWebGPU() {
   const format = gpu.getPreferredCanvasFormat();
   context.configure({ device, format });
 
-  const seed = (() => {
-    if (globalThis.crypto?.getRandomValues) {
-      const a = new Uint32Array(1);
-      globalThis.crypto.getRandomValues(a);
-      return (a[0] / 2 ** 32) * 10000;
-    }
-    return Math.random() * 10000;
-  })();
   const noise = new SimplexNoise3D(seed);
   console.log('noiseSeed:', seed);
 
@@ -329,9 +361,7 @@ async function runWebGPU() {
       order[i] = i;
     }
 
-    console.time('rawValues sort');
     order.sort((a, b) => rawValues[a] - rawValues[b]);
-    console.timeEnd('rawValues sort');
 
     const percentiles: number[] = new Array(vertexCount);
     for (let rank = 0; rank < vertexCount; rank++) {
@@ -456,12 +486,12 @@ async function runWebGPU() {
     return { avgOceanDepthFeet, avgLandHeightFeet, oceanFracActual };
   }
 
+
   function updateVolumeRatioDisplayAndMesh() {
     oceanSAFraction = Number(oceanSAPercentSlider.value) / 100;
     oceanSAPercentValue.textContent = oceanSAPercentSlider.value; //update the display
-
     // Regenerate mesh first so we can compute avg depth/height consistently.
-    const stats = createMeshAndApply();
+    createMeshAndApply();
   }
 
   updateVolumeRatioDisplayAndMesh();
@@ -771,7 +801,33 @@ async function runWebGPU() {
     requestAnimationFrame(frame);
   }
 
+
   requestAnimationFrame(frame);
+  setGenerateBtnEnabled(true);
 }
 
-runWebGPU();
+// Initial page load: random seed, display, input, terraform
+function startTerraformingUI() {
+  let currentSeed = randomSeed();
+  seedDisplay.textContent = String(currentSeed);
+  seedInput.value = String(randomSeed());
+  clearSeedError();
+  terraformWithSeed(currentSeed);
+
+  generateSeedBtn.onclick = () => {
+    clearSeedError();
+    const val = seedInput.value.trim();
+    if (!isValidSeed(val)) {
+      showSeedError('Seed must be an integer between 0 and ' + SEED_MAX + '.');
+      return;
+    }
+    const userSeed = Number(val);
+    setGenerateBtnEnabled(false);
+    terraformWithSeed(userSeed).then(() => {
+      // After terraforming, put a new random seed in the input
+      seedInput.value = String(randomSeed());
+    });
+  };
+}
+
+startTerraformingUI();
