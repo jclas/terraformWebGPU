@@ -14,6 +14,7 @@ const seedError = document.getElementById('seed-error') as HTMLElement;
 // Seed helpers
 const SEED_MIN = 0;
 const SEED_MAX = 2_147_483_647;
+
 function randomSeed(): number {
 
   if (window.crypto?.getRandomValues) {
@@ -23,6 +24,7 @@ function randomSeed(): number {
   }
   return Math.floor(Math.random() * (SEED_MAX + 1));
 }
+
 function isValidSeed(val: string): boolean {
   if (!/^[0-9]+$/.test(val)) return false;
   const n = Number(val);
@@ -33,11 +35,6 @@ function showSeedError(msg: string) {
 }
 function clearSeedError() {
   seedError.textContent = '';
-}
-
-// Disable/enable Generate button
-function setGenerateBtnEnabled(enabled: boolean) {
-  generateSeedBtn.disabled = !enabled;
 }
 
 /**
@@ -105,6 +102,24 @@ function smoothstep(edge0: number, edge1: number, x: number): number {
   return t * t * (3 - 2 * t);
 }
 
+/**
+ * Computes 3D fractal Brownian motion (fBm) by summing multiple octaves of a base noise function.
+ *
+ * Each octave samples the same noise at a higher frequency (typically doubling each octave) and
+ * a lower amplitude (typically halving each octave). This produces layered, natural-looking
+ * variation useful for terrain/continents/detail fields.
+ *
+ * The result is normalized by the sum of amplitudes so the output scale stays roughly consistent
+ * as `octaves` changes.
+ *
+ * @param x - Sample coordinate.
+ * @param y - Sample coordinate.
+ * @param z - Sample coordinate.
+ * @param noise - Noise source to sample (e.g., simplex noise).
+ * @param octaves - Number of layers to sum (clamped to at least 1).
+ * @param baseFreq - Starting frequency; lower values yield broader features, higher values yield finer detail.
+ * @returns A normalized fBm value (approximately in the same range as the underlying noise).
+ */
 function fbm3(x: number, y: number, z: number, noise: SimplexNoise3D, octaves: number, baseFreq: number): number {
   let sum = 0;
   let amp = 1;
@@ -214,7 +229,6 @@ const VISUALIZATION_SCALE = 0.000001;   // Shrink globe further for rendering, k
 const RELIEF_EXAGGERATION = 10;         // Visual-only: scales geometry relief, not elevation feet values
 const STD_DEVS = 4;                     // multiply std devs by typical offset error %)
 
-
 // Spatially correlated "continent" field in approximately [-1, 1].
 // Intentionally low-frequency with higher-frequency detail layered on top.
 // We still run an empirical CDF after this, so the visual structure comes from correlation
@@ -238,14 +252,47 @@ function rawNoiseOnSphere(x: number, y: number, z: number, noise: SimplexNoise3D
   return clamp(combined + equatorBias, -1, 1);
 }
 
-// WebGPU + Sphere mesh setup
+// Global GPU objects
+let gpuAdapter: GPUAdapter | null = null;
+let gpuDevice: GPUDevice | null = null;
+let gpuContext: GPUCanvasContext | null = null;
+let gpuFormat: GPUTextureFormat | null = null;
+let vertexBuffer: GPUBuffer | null = null;
+let normalBuffer: GPUBuffer | null = null;
+let indexBuffer: GPUBuffer | null = null;
+let pipeline: GPURenderPipeline | null = null;
+let depthTexture: GPUTexture | null = null;
+let mvpBuffer: GPUBuffer | null = null;
+let zSeaBuffer: GPUBuffer | null = null;
+let bindGroupLayout: GPUBindGroupLayout | null = null;
+let bindGroup: GPUBindGroup | null = null;
 
+// Render-loop control: every terraform run currently creates a new rAF loop.
+// We keep only the latest loop alive by using an increasing id.
+let activeRenderLoopId = 0;
+let activeRafHandle: number | null = null;
+
+// Clean up/destroy previous GPU resources
+function cleanupGPUResources() {
+  if (vertexBuffer) { vertexBuffer.destroy(); vertexBuffer = null; }
+  if (normalBuffer) { normalBuffer.destroy(); normalBuffer = null; }
+  if (indexBuffer) { indexBuffer.destroy(); indexBuffer = null; }
+  if (depthTexture) { depthTexture.destroy(); depthTexture = null; }
+  if (mvpBuffer) { mvpBuffer.destroy(); mvpBuffer = null; }
+  if (zSeaBuffer) { zSeaBuffer.destroy(); zSeaBuffer = null; }
+  // pipeline, bindGroup, bindGroupLayout do not need explicit destroy
+}
 
 // Main terraforming/visualization logic, parameterized by seed
 async function terraformWithSeed(seed: number) {
-  setGenerateBtnEnabled(false);
-  clearSeedError();
-  seedDisplay.textContent = String(seed);
+
+  // Stop any prior animation loop (and ensure stale loops stop rescheduling).
+  activeRenderLoopId++;
+  const renderLoopId = activeRenderLoopId;
+  if (activeRafHandle !== null) {
+    cancelAnimationFrame(activeRafHandle);
+    activeRafHandle = null;
+  }
 
   const gpu = (navigator as any).gpu as GPU | undefined;
   if (!gpu) {
@@ -258,13 +305,28 @@ async function terraformWithSeed(seed: number) {
     throw new Error('Canvas element with id "webgpu-canvas" not found.');
   }
 
-  const adapter = await gpu.requestAdapter();
-  if (!adapter) throw new Error('No GPU adapter found');
+  // Only create adapter/device/context once
+  if (!gpuAdapter) {
+    gpuAdapter = await gpu.requestAdapter();
+    if (!gpuAdapter) throw new Error('No GPU adapter found');
+  }
+  if (!gpuDevice) {
+    gpuDevice = await gpuAdapter.requestDevice();
+  }
+  if (!gpuContext) {
+    gpuContext = canvas.getContext('webgpu') as unknown as GPUCanvasContext;
+  }
+  if (!gpuFormat) {
+    gpuFormat = gpu.getPreferredCanvasFormat();
+  }
+  gpuContext.configure({ device: gpuDevice, format: gpuFormat });
 
-  const device = await adapter.requestDevice();
-  const context = canvas.getContext('webgpu') as unknown as GPUCanvasContext;
-  const format = gpu.getPreferredCanvasFormat();
-  context.configure({ device, format });
+  // Clean up previous GPU resources before creating new ones
+  cleanupGPUResources();
+
+  const device = gpuDevice;
+  const context = gpuContext;
+  const format = gpuFormat;
 
   const noise = new SimplexNoise3D(seed);
   console.log('noiseSeed:', seed);
@@ -275,9 +337,6 @@ async function terraformWithSeed(seed: number) {
 
   // Create mesh and buffers once, then update mesh/buffers/statistics as needed
   let mesh: any;
-  let vertexBuffer: GPUBuffer;
-  let normalBuffer: GPUBuffer;
-  let indexBuffer: GPUBuffer;
 
   /**
     * Generates and uploads a procedural sphere mesh with elevation data, computes normals, and logs mesh statistics.
@@ -426,41 +485,29 @@ async function terraformWithSeed(seed: number) {
     const normals = computeVertexNormals(outVertices, unitMesh.indices);
 
     // Create or update buffers
-    if (vertexBuffer) {
-      device.queue.writeBuffer(vertexBuffer, 0, mesh.vertices);
-    } else {
-      vertexBuffer = device.createBuffer({
-        size: mesh.vertices.byteLength,
-        usage: GPUBufferUsage.VERTEX,
-        mappedAtCreation: true,
-      });
-      new Float32Array(vertexBuffer.getMappedRange()).set(mesh.vertices);
-      vertexBuffer.unmap();
-    }
+    vertexBuffer = device.createBuffer({
+      size: mesh.vertices.byteLength,
+      usage: GPUBufferUsage.VERTEX,
+      mappedAtCreation: true,
+    });
+    new Float32Array(vertexBuffer.getMappedRange()).set(mesh.vertices);
+    vertexBuffer.unmap();
 
-    if (normalBuffer) {
-      device.queue.writeBuffer(normalBuffer, 0, normals.buffer, normals.byteOffset, normals.byteLength);
-    } else {
-      normalBuffer = device.createBuffer({
-        size: normals.byteLength,
-        usage: GPUBufferUsage.VERTEX,
-        mappedAtCreation: true,
-      });
-      new Float32Array(normalBuffer.getMappedRange()).set(normals);
-      normalBuffer.unmap();
-    }
+    normalBuffer = device.createBuffer({
+      size: normals.byteLength,
+      usage: GPUBufferUsage.VERTEX,
+      mappedAtCreation: true,
+    });
+    new Float32Array(normalBuffer.getMappedRange()).set(normals);
+    normalBuffer.unmap();
 
-    if (indexBuffer) {
-      device.queue.writeBuffer(indexBuffer, 0, mesh.indices);
-    } else {
-      indexBuffer = device.createBuffer({
-        size: mesh.indices.byteLength,
-        usage: GPUBufferUsage.INDEX,
-        mappedAtCreation: true,
-      });
-      new Uint32Array(indexBuffer.getMappedRange()).set(mesh.indices);
-      indexBuffer.unmap();
-    }
+    indexBuffer = device.createBuffer({
+      size: mesh.indices.byteLength,
+      usage: GPUBufferUsage.INDEX,
+      mappedAtCreation: true,
+    });
+    new Uint32Array(indexBuffer.getMappedRange()).set(mesh.indices);
+    indexBuffer.unmap();
 
     // Compute averages (vertex-weighted; roughly area-uniform for an icosphere)
     const avgOceanDepthFeet = oceanCount > 0 ? oceanDepthSum / oceanCount : 0;
@@ -610,19 +657,16 @@ async function terraformWithSeed(seed: number) {
     return rotationY(angle);
   }
 
-
-  let mvpBuffer = device.createBuffer({
+  mvpBuffer = device.createBuffer({
     size: 128,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  // Uniform buffer for zSeaBuffer
-  let zSeaBuffer = device.createBuffer({
+  zSeaBuffer = device.createBuffer({
     size: 4,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
-  // Bind group layout and bind group
-  const bindGroupLayout = device.createBindGroupLayout({
+  bindGroupLayout = device.createBindGroupLayout({
     entries: [
       {
         binding: 0,
@@ -637,7 +681,7 @@ async function terraformWithSeed(seed: number) {
     ],
   });
 
-  const bindGroup = device.createBindGroup({
+  bindGroup = device.createBindGroup({
     layout: bindGroupLayout,
     entries: [
       { binding: 0, resource: { buffer: mvpBuffer } },
@@ -714,7 +758,7 @@ async function terraformWithSeed(seed: number) {
   `;
 
   // Update pipeline vertex buffer layout
-  const pipeline = device.createRenderPipeline({
+  pipeline = device.createRenderPipeline({
     layout: device.createPipelineLayout({ bindGroupLayouts: [bindGroupLayout] }),
     vertex: {
       module: device.createShaderModule({ code: vertexShader }),
@@ -748,13 +792,16 @@ async function terraformWithSeed(seed: number) {
     primitive: { topology: 'triangle-list', cullMode: 'back' },
   });
 
-  let depthTexture = device.createTexture({
+  depthTexture = device.createTexture({
     size: { width: canvas.width, height: canvas.height, depthOrArrayLayers: 1 },
     format: 'depth24plus',
     usage: GPUTextureUsage.RENDER_ATTACHMENT,
   });
 
   function frame(time: number) {
+    // If a newer terraform run started, stop this loop.
+    if (renderLoopId !== activeRenderLoopId) return;
+
     // Animate model rotation
     const angle = (time || 0) * 0.0002; //change decimal to change speed
     const model = modelMatrixYX(angle);
@@ -766,10 +813,10 @@ async function terraformWithSeed(seed: number) {
     const uniforms = new Float32Array(32);
     uniforms.set(mvp, 0);
     uniforms.set(model, 16);
-    device.queue.writeBuffer(mvpBuffer, 0, uniforms.buffer, uniforms.byteOffset, uniforms.byteLength);
+    device.queue.writeBuffer(mvpBuffer!, 0, uniforms.buffer, uniforms.byteOffset, uniforms.byteLength);
 
     const sea = new Float32Array([seaLevelElev]);
-    device.queue.writeBuffer(zSeaBuffer, 0, sea.buffer, sea.byteOffset, sea.byteLength);
+    device.queue.writeBuffer(zSeaBuffer!, 0, sea.buffer, sea.byteOffset, sea.byteLength);
 
     const encoder = device.createCommandEncoder();
     const texView = context.getCurrentTexture().createView();
@@ -782,52 +829,82 @@ async function terraformWithSeed(seed: number) {
         storeOp: 'store',
       }],
       depthStencilAttachment: {
-        view: depthTexture.createView(),
+        view: depthTexture!.createView(),
         depthClearValue: 1.0,
         depthLoadOp: 'clear',
         depthStoreOp: 'store',
       },
     });
 
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.setVertexBuffer(0, vertexBuffer);
-    pass.setVertexBuffer(1, normalBuffer);
-    pass.setIndexBuffer(indexBuffer, 'uint32');
+    pass.setPipeline(pipeline!);
+    pass.setBindGroup(0, bindGroup!);
+    pass.setVertexBuffer(0, vertexBuffer!);
+    pass.setVertexBuffer(1, normalBuffer!);
+    pass.setIndexBuffer(indexBuffer!, 'uint32');
     pass.drawIndexed(mesh.indices.length);
     pass.end();
 
     device.queue.submit([encoder.finish()]);
-    requestAnimationFrame(frame);
+    activeRafHandle = requestAnimationFrame(frame);
   }
 
-
-  requestAnimationFrame(frame);
-  setGenerateBtnEnabled(true);
+  activeRafHandle = requestAnimationFrame(frame);
 }
+
+function setUiEnabled(enabled: boolean) {
+  generateSeedBtn.disabled = !enabled;
+}
+
+const nextFrame = () => new Promise<number>(requestAnimationFrame);
+
+let terraformBusy = false;
+
+async function runTerraformFromSeed(seed: number) {
+  if (terraformBusy) return;
+
+  terraformBusy = true;
+  setUiEnabled(false);
+
+  let startedTerraform = false;
+  try {
+    await nextFrame(); // Give the browser a chance to paint the disabled state before heavy work begins.
+    startedTerraform = true;
+    await terraformWithSeed(seed);
+  } finally {
+    // Keep busy until the next macrotask so queued double-click events can't start a 2nd run.
+    // Apparently even a zero-length timeout can get that done.
+    window.setTimeout(() => {
+      if (startedTerraform) {
+        seedInput.value = String(randomSeed());
+      }
+      setUiEnabled(true);
+      terraformBusy = false;
+    }, 0);
+  }
+}
+
+async function onGenerateClick(event: MouseEvent) {
+  event.preventDefault();
+  clearSeedError();
+
+  const seedString = seedInput.value.trim();
+  if (!isValidSeed(seedString)) {
+    showSeedError('Seed must be an integer between 0 and ' + SEED_MAX + '.');
+    return;
+  }
+
+  seedDisplay.textContent = seedString;
+
+  await runTerraformFromSeed(Number(seedString));
+}
+
+generateSeedBtn.onclick = onGenerateClick;
 
 // Initial page load: random seed, display, input, terraform
-function startTerraformingUI() {
-  let currentSeed = randomSeed();
-  seedDisplay.textContent = String(currentSeed);
-  seedInput.value = String(randomSeed());
-  clearSeedError();
-  terraformWithSeed(currentSeed);
+(async () => {
+  const seed = randomSeed();
+  seedDisplay.textContent = String(seed);
+  seedInput.value = String(seed);
+  await runTerraformFromSeed(seed);
+})();
 
-  generateSeedBtn.onclick = () => {
-    clearSeedError();
-    const val = seedInput.value.trim();
-    if (!isValidSeed(val)) {
-      showSeedError('Seed must be an integer between 0 and ' + SEED_MAX + '.');
-      return;
-    }
-    const userSeed = Number(val);
-    setGenerateBtnEnabled(false);
-    terraformWithSeed(userSeed).then(() => {
-      // After terraforming, put a new random seed in the input
-      seedInput.value = String(randomSeed());
-    });
-  };
-}
-
-startTerraformingUI();
