@@ -42,6 +42,7 @@ export const TERRAIN_COLOR_CONFIG: TerrainColorConfig = {
   rocky: [0.4, 0.4, 0.4],
   snow: [1.0, 1.0, 1.0],
 
+  //todo: lower all the elevation points and change the spread - only 2.3% should be above 10,000 ft statistically
   deepToMidStartOffsetFeet: -25_000,
   deepToMidEndOffsetFeet: -15_000,
   midToShallowStartOffsetFeet: -15_000,

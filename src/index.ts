@@ -9,19 +9,11 @@ const seedDisplay = document.getElementById('current-seed') as HTMLElement;
 const seedInput = document.getElementById('seed-input') as HTMLInputElement;
 const generateSeedBtn = document.getElementById('generate-seed-btn') as HTMLButtonElement;
 const seedError = document.getElementById('seed-error') as HTMLElement;
+const flatMapBtn = document.getElementById('flat-map-btn') as HTMLButtonElement | null;
 
 const canvas = document.getElementById('webgpu-canvas') as HTMLCanvasElement;
 if (!canvas) {
   throw new Error('Canvas element with id "webgpu-canvas" not found.');
-}
-
-// Flat map export button (added dynamically if not present)
-let flatMapBtn = document.getElementById('flat-map-btn') as HTMLButtonElement | null;
-if (!flatMapBtn) {
-  flatMapBtn = document.createElement('button');
-  flatMapBtn.id = 'flat-map-btn';
-  flatMapBtn.textContent = 'Export Flat Map';
-  generateSeedBtn.parentElement?.insertBefore(flatMapBtn, generateSeedBtn.nextSibling);
 }
 
 // Seed helpers
