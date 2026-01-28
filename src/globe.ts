@@ -443,7 +443,7 @@ export class GlobeRenderer {
     const frame = (time: number) => {
       if (renderLoopId !== this.activeRenderLoopId) return;
 
-      const angle = (time || 0) * 0.0002;
+      const angle = (time || 0) * 0.00015; //rotation speed
       const model = rotationY(angle);
 
       const view = lookAtMatrix([0, 0, this.cameraDistance], [0, 0, 0], [0, 1, 0]);

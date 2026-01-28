@@ -22,6 +22,7 @@ export interface FlatMapViewerOptions extends FlatMapOptions {
   reuseWindowName?: string;
   canvasMarginTopBottom?: number;
   canvasMarginLeftRight?: number;
+  openAsTab?: boolean;
 }
 
 type FlatMapReadyMsg = { type: 'TFW_READY'; viewer: 'flatmap'; nonce: string };
@@ -154,24 +155,31 @@ async function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 }
 
 export async function openFlatMapWindow(opts: FlatMapViewerOptions): Promise<void> {
+  let viewerWin: Window | null;
+  const name = opts.reuseWindowName ?? 'TerraformFlatMapViewer';
   const title = opts.title ?? 'Flat Map Viewer';
   const nonce = randomNonce();
 
-  const canvasHeight = Math.max(opts.sourceCanvasHeight || 600);
+  const canvasHeight = Math.max(opts.sourceCanvasHeight ?? 600);
   const canvasWidth = canvasHeight * 2; //ensure 2:1 aspect
-  const marginTopBottom = opts.canvasMarginTopBottom || 0;
-  const marginLeftRight = opts.canvasMarginLeftRight || 0;
+  const marginTopBottom = opts.canvasMarginTopBottom ?? 0;
+  const marginLeftRight = opts.canvasMarginLeftRight ?? 0;
+  const openAsTab = opts.openAsTab ?? true;  //tab default
 
-  // initial window popup size
-  const winW = Math.min(screen.availWidth, canvasWidth + marginLeftRight * 2);
-  const winH = Math.min(screen.availHeight, canvasHeight + marginTopBottom * 2);
+  if (openAsTab) {
+    viewerWin = window.open(`flatmap.html#nonce=${encodeURIComponent(nonce)}`, name);
+  } else {
+    // initial window popup size
+    const winW = Math.min(screen.availWidth, canvasWidth + marginLeftRight * 2);
+    const winH = Math.min(screen.availHeight, canvasHeight + marginTopBottom * 2);
 
-  const name = opts.reuseWindowName ?? 'TerraformFlatMapViewer';
-  const viewerWin = window.open(
-    `flatmap.html#nonce=${encodeURIComponent(nonce)}`,
-    name,
-    `popup=1,width=${winW},height=${winH},scrollbars=1,resizable=1`,
-  );
+    viewerWin = window.open(
+      `flatmap.html#nonce=${encodeURIComponent(nonce)}`,
+      name,
+      `popup=1,width=${winW},height=${winH},scrollbars=1,resizable=1`,
+    );
+  }
+
   if (!viewerWin) {
     throw new Error('Popup blocked while opening flat map viewer.');
   }

@@ -122,6 +122,7 @@ async function openFlatMap() {
     sourceCanvasHeight: canvas.height,
     // subdivisions: 9,
     canvasMarginTopBottom: 50,
+    openAsTab: true,
   });
 }
 
@@ -145,7 +146,8 @@ async function openWinkelTripelMap() {
     seed: Number(seedString),
     oceanSAFraction,
     sourceCanvasHeight: canvas.height,
-    canvasMarginTopBottom: 50,
+    // canvasMarginTopBottom: 50,
+    openAsTab: true,
   });
 }
 

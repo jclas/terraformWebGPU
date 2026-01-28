@@ -8,6 +8,7 @@ export interface WinkelTripelWindowOptions {
   reuseWindowName?: string;
   canvasMarginTopBottom?: number;
   canvasMarginLeftRight?: number;
+  openAsTab?: boolean;
 }
 
 type WinkelReadyMsg = { type: 'TFW_READY'; viewer: 'winkel'; nonce: string };
@@ -24,6 +25,10 @@ type WinkelInitMsg = {
   qualityHeightPx: number;
 };
 
+/**
+ * Create a random string based on time and a random number
+ * @returns string
+ */
 function randomNonce(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
@@ -69,26 +74,33 @@ function waitForViewerReady(target: Window, timeoutMs = 10_000): Promise<string>
 }
 
 export async function openWinkelTripelMapWindow(opts: WinkelTripelWindowOptions): Promise<void> {
+  
+  let viewerWin: Window | null;
+  const name = opts.reuseWindowName ?? 'TerraformWinkelTripelViewer';
   const title = opts.title ?? 'Winkel Tripel Viewer';
   const nonce = randomNonce();
 
-  const qualityHeightPx = opts.qualityHeightPx ?? 600;
   const ASPECT = (Math.PI + 2) / Math.PI; // standard Winkel Tripel bounds aspect
+  const qualityHeightPx = opts.qualityHeightPx ?? 600;
   const qualityWidthPx = Math.round(qualityHeightPx * ASPECT);
-  const marginTopBottom = opts.canvasMarginTopBottom || 0;
-  const marginLeftRight = opts.canvasMarginLeftRight || 0;
+  const marginTopBottom = opts.canvasMarginTopBottom ?? 0;
+  const marginLeftRight = opts.canvasMarginLeftRight ?? 0;
+  const openAsTab = opts.openAsTab ?? true;  //tab default
 
-  const name = opts.reuseWindowName ?? 'TerraformWinkelTripelViewer';
+  if (openAsTab) {
+    viewerWin = window.open(`winkel.html#nonce=${encodeURIComponent(nonce)}`, name);
+  } else  {
+    // initial window popup size
+    const winW = Math.min(screen.availWidth, qualityWidthPx + marginLeftRight * 2);
+    const winH = Math.min(screen.availHeight, qualityHeightPx + marginTopBottom * 2);
 
-  // initial window popup size
-  const winW = Math.min(screen.availWidth, qualityWidthPx + marginLeftRight*2);
-  const winH = Math.min(screen.availHeight, qualityHeightPx + marginTopBottom*2);
+    viewerWin = window.open(
+      `winkel.html#nonce=${encodeURIComponent(nonce)}`,
+      name,
+      `popup=1,width=${winW},height=${winH},scrollbars=1,resizable=1`,
+    );
+  }
 
-  const viewerWin = window.open(
-    `winkel.html#nonce=${encodeURIComponent(nonce)}`,
-    name,
-    `popup=1,width=${winW},height=${winH},scrollbars=1,resizable=1`,
-  );
   if (!viewerWin) {
     throw new Error('Popup blocked while opening Winkel Tripel viewer.');
   }

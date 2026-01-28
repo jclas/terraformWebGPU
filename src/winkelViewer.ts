@@ -318,44 +318,14 @@ function main() {
   let renderToken = 0;
 
   function resize() {
-    dpr = Math.max(1, window.devicePixelRatio || 1);
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
 
     const maxCssW = Math.max(1, window.innerWidth);
     const maxCssH = Math.max(1, window.innerHeight);
 
-    // Initial load: prefer a 600px-tall canvas (if it fits).
-    // After that, behave like flatmap: keep the aspect and fit within the window.
-    let cssH = Number.NaN;
-    let cssW = Number.NaN;
-
-    // Keep the initial canvas size stable during startup/initial renders.
-    // After the user actually resizes the window, switch to aspect-fit sizing.
-    if (lockCssSizeUntilWindowResize) {
-      const existingH = Number.parseFloat(canvas.style.height || '');
-      const existingW = Number.parseFloat(canvas.style.width || '');
-      if (Number.isFinite(existingH) && Number.isFinite(existingW) && existingH > 0 && existingW > 0) {
-        cssH = Math.min(existingH, maxCssH);
-        cssW = Math.min(existingW, maxCssW);
-      }
-    }
-
-    if (!Number.isFinite(cssH) || !Number.isFinite(cssW)) {
-    if (!usedInitialCanvasSize) {
-      const desiredH = 600;
-      const desiredW = desiredH * ASPECT;
-      if (desiredH <= maxCssH && desiredW <= maxCssW) {
-        cssH = desiredH;
-        cssW = desiredW;
-      } else {
-        cssH = Math.min(maxCssH, maxCssW / ASPECT);
-        cssW = cssH * ASPECT;
-      }
-      usedInitialCanvasSize = true;
-    } else {
-      cssH = Math.min(maxCssH, maxCssW / ASPECT);
-      cssW = cssH * ASPECT;
-    }
-    }
+    // Always maximize: fit the largest ASPECT rectangle in the window
+    let cssH = Math.min(maxCssH, maxCssW / ASPECT);
+    let cssW = cssH * ASPECT;
 
     canvas.style.width = cssW + 'px';
     canvas.style.height = cssH + 'px';
