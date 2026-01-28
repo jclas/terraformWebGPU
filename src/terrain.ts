@@ -47,10 +47,10 @@ export const TERRAIN_COLOR_CONFIG: TerrainColorConfig = {
   deepToMidEndOffsetFeet: -15_000,
   midToShallowStartOffsetFeet: -15_000,
   midToShallowEndOffsetFeet: -6_000,
-  lowToHighEndOffsetFeet: 12_000,
-  highToRockyEndOffsetFeet: 17_000,
-  rockyToSnowStartOffsetFeet: 18_000,
-  rockyToSnowEndOffsetFeet: 25_000,
+  lowToHighEndOffsetFeet: 15_000,
+  highToRockyEndOffsetFeet: 22_000,
+  rockyToSnowStartOffsetFeet: 25_000,
+  rockyToSnowEndOffsetFeet: 35_000,
 };
 
 export function clamp(value: number, min: number, max: number): number {
@@ -268,7 +268,7 @@ export function rawNoiseOnSphere(x: number, y: number, z: number, noise: Simplex
 
   const combined = 0.85 * continent + 0.45 * detail * (0.25 + 0.75 * mask);
 
-  const equatorBias = 0.15 * (1 - Math.abs(y));
+  const equatorBias = 0.15 * (1 - Math.abs(y)); //higher elevation bias towards equator
   return clamp(combined + equatorBias, -1, 1);
 }
 

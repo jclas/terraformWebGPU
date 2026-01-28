@@ -10,43 +10,93 @@ import {
   STD_DEVS,
 } from './terrain';
 
-export interface FlatMapExportOptions {
+export interface FlatMapOptions {
   seed: number;
   oceanSAFraction: number;
-  sourceCanvasWidth: number;
-  sourceCanvasHeight: number;
-  minWidth?: number;
+  sourceCanvasHeight: number; //no width needed is always 2:1
   subdivisions?: number;
 }
 
-export interface FlatMapViewerOptions extends FlatMapExportOptions {
+export interface FlatMapViewerOptions extends FlatMapOptions {
   title?: string;
   reuseWindowName?: string;
+  canvasMarginTopBottom?: number;
+  canvasMarginLeftRight?: number;
 }
 
-function pickExportSize({
-  sourceCanvasWidth,
+type FlatMapReadyMsg = { type: 'TFW_READY'; viewer: 'flatmap'; nonce: string };
+type FlatMapPingMsg = { type: 'TFW_PING'; viewer: 'flatmap' };
+type FlatMapInitMsg = {
+  type: 'TFW_FLATMAP_INIT';
+  viewer: 'flatmap';
+  nonce: string;
+  title: string;
+  pngBlob: Blob;
+};
+
+function randomNonce(): string {
+  // Not security-grade; just prevents cross-window message mixups.
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function waitForViewerReady(target: Window, timeoutMs = 10_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const t = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Timed out waiting for viewer to load'));
+    }, timeoutMs);
+
+    const pingMsg: FlatMapPingMsg = { type: 'TFW_PING', viewer: 'flatmap' };
+    const pingInterval = window.setInterval(() => {
+      try {
+        target.postMessage(pingMsg, '*');
+      } catch {
+        // Ignore transient errors while the window is navigating.
+      }
+    }, 250);
+
+    // Kick once immediately, too.
+    try {
+      target.postMessage(pingMsg, '*');
+    } catch {
+      // Ignore.
+    }
+
+    function cleanup() {
+      window.clearTimeout(t);
+      window.clearInterval(pingInterval);
+      window.removeEventListener('message', onMsg);
+    }
+
+    function onMsg(ev: MessageEvent) {
+      if (ev.source !== target) return;
+      const data = ev.data as FlatMapReadyMsg;
+      if (!data || data.type !== 'TFW_READY' || data.viewer !== 'flatmap') return;
+      cleanup();
+      resolve(data.nonce);
+    }
+
+    window.addEventListener('message', onMsg);
+  });
+}
+
+function pickCanvasSize({
   sourceCanvasHeight,
-  minWidth = 1024,
 }: {
-  sourceCanvasWidth: number;
   sourceCanvasHeight: number;
-  minWidth?: number;
 }): { width: number; height: number } {
   // Guarantee: output dimensions are >= the globe canvas dimensions.
   // Also keep an equirectangular 2:1 aspect.
-  const width = Math.max(sourceCanvasWidth, sourceCanvasHeight * 2, minWidth);
-  const height = Math.max(sourceCanvasHeight, Math.floor(width / 2));
+  const height = Math.max(sourceCanvasHeight, 600);
+  const width = height * 2;
   return { width, height };
 }
 
-async function renderFlatMapCanvas(opts: FlatMapExportOptions): Promise<HTMLCanvasElement> {
-  const { seed, oceanSAFraction, sourceCanvasWidth, sourceCanvasHeight, subdivisions = 8 } = opts;
+async function renderFlatMapCanvas(opts: FlatMapOptions): Promise<HTMLCanvasElement> {
+  const { seed, oceanSAFraction, sourceCanvasHeight, subdivisions = 8 } = opts;
 
-  const { width, height } = pickExportSize({
-    sourceCanvasWidth,
+  const { width, height } = pickCanvasSize({
     sourceCanvasHeight,
-    minWidth: opts.minWidth,
   });
 
   const seaLevelFeet = percentileToElevationFeet(oceanSAFraction, STD_DEVS).elevFeet;
@@ -103,175 +153,40 @@ async function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
   });
 }
 
-export async function exportFlatMapPng(opts: FlatMapExportOptions): Promise<void> {
-  const canvas = await renderFlatMapCanvas(opts);
-  const blob = await canvasToPngBlob(canvas);
+export async function openFlatMapWindow(opts: FlatMapViewerOptions): Promise<void> {
+  const title = opts.title ?? 'Flat Map Viewer';
+  const nonce = randomNonce();
 
-  const url = URL.createObjectURL(blob);
-  const win = window.open(url, '_blank', 'noopener');
-  if (!win) {
-    URL.revokeObjectURL(url);
-    throw new Error('Popup blocked while opening flat map');
+  const canvasHeight = Math.max(opts.sourceCanvasHeight || 600);
+  const canvasWidth = canvasHeight * 2; //ensure 2:1 aspect
+  const marginTopBottom = opts.canvasMarginTopBottom || 0;
+  const marginLeftRight = opts.canvasMarginLeftRight || 0;
+
+  // initial window popup size
+  const winW = Math.min(screen.availWidth, canvasWidth + marginLeftRight * 2);
+  const winH = Math.min(screen.availHeight, canvasHeight + marginTopBottom * 2);
+
+  const name = opts.reuseWindowName ?? 'TerraformFlatMapViewer';
+  const viewerWin = window.open(
+    `flatmap.html#nonce=${encodeURIComponent(nonce)}`,
+    name,
+    `popup=1,width=${winW},height=${winH},scrollbars=1,resizable=1`,
+  );
+  if (!viewerWin) {
+    throw new Error('Popup blocked while opening flat map viewer.');
   }
 
-  // Revoke later so the tab has time to load.
-  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
+  const readyNonce = await waitForViewerReady(viewerWin);
 
-export async function openFlatMapViewer(targetWindow: Window, opts: FlatMapViewerOptions): Promise<void> {
-  const title = opts.title ?? 'Flat Map Viewer';
-  const doc = targetWindow.document;
-
-  // Loading shell (shows immediately while we generate the PNG).
-  doc.open();
-  doc.write(`<!doctype html><html><head><meta charset="utf-8"/><title>${title}</title></head><body style="margin:0;background:#0b0f19;color:#cbd5e1;font-family:system-ui,Segoe UI,Arial,sans-serif;"><div style="padding:16px;">Loading flat map…</div></body></html>`);
-  doc.close();
-
-  // Generate the image in the opener window, then send it to the viewer.
   const srcCanvas = await renderFlatMapCanvas(opts);
   const pngBlob = await canvasToPngBlob(srcCanvas);
-  const url = URL.createObjectURL(pngBlob);
 
-  // Viewer document (canvas + inline script). Horizontal drag only, seamless wrap.
-  const safeTitle = title.replace(/[\u0000-\u001F\u007F<>"'`]/g, '');
-  const html = `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>${safeTitle}</title>
-    <style>
-      html, body { height: 100%; margin: 0; background: #0b0f19; overflow: hidden; }
-      body { display: grid; place-items: center; }
-      #c { display: block; touch-action: none; cursor: grab; background: #000; }
-      #hud { position: fixed; left: 12px; top: 10px; padding: 6px 10px; border-radius: 8px;
-             background: rgba(2,6,23,0.65); color: #cbd5e1; font: 12px/1.2 system-ui, Segoe UI, Arial, sans-serif; }
-    </style>
-  </head>
-  <body>
-    <canvas id="c"></canvas>
-    <div id="hud">Drag left/right (wraps)</div>
-    <script>
-      (() => {
-        // Detach opener access from this tab (mitigation since we didn't use noopener).
-        try { window.opener = null; } catch {}
-
-        const mapUrl = ${JSON.stringify(url)};
-        const canvas = document.getElementById('c');
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          document.body.textContent = '2D canvas not available';
-          return;
-        }
-
-        let dpr = 1;
-        let viewW = 1;
-        let viewH = 1;
-        let tileW = 1;
-        let tileH = 1;
-        let offsetX = 0;
-        let dragging = false;
-        let lastClientX = 0;
-        let bitmap = null;
-
-        function resize() {
-          dpr = Math.max(1, window.devicePixelRatio || 1);
-
-          // Maintain an exact 2:1 canvas (width = 2x height) that fits within the window.
-          const maxCssW = Math.max(1, window.innerWidth);
-          const maxCssH = Math.max(1, window.innerHeight);
-          const cssH = Math.min(maxCssH, maxCssW / 2);
-          const cssW = cssH * 2;
-
-          canvas.style.width = cssW + 'px';
-          canvas.style.height = cssH + 'px';
-
-          viewW = Math.max(1, Math.floor(cssW * dpr));
-          viewH = Math.max(1, Math.floor(cssH * dpr));
-          canvas.width = viewW;
-          canvas.height = viewH;
-
-          // The tile should exactly fill the canvas (still 2:1).
-          tileW = viewW;
-          tileH = viewH;
-        }
-
-        function wrap(v, m) {
-          if (m <= 0) return 0;
-          v = v % m;
-          return v < 0 ? v + m : v;
-        }
-
-        function draw() {
-          if (!bitmap) return;
-          ctx.clearRect(0, 0, viewW, viewH);
-
-          const ox = wrap(offsetX, tileW);
-          // Draw enough tiles to cover the viewport.
-          let startX = -ox;
-          while (startX > 0) startX -= tileW;
-          for (let x = startX; x < viewW + tileW; x += tileW) {
-            ctx.drawImage(bitmap, x, 0, tileW, tileH);
-          }
-        }
-
-        canvas.addEventListener('pointerdown', (e) => {
-          dragging = true;
-          lastClientX = e.clientX;
-          canvas.style.cursor = 'grabbing';
-          try { canvas.setPointerCapture(e.pointerId); } catch {}
-        });
-        canvas.addEventListener('pointermove', (e) => {
-          if (!dragging) return;
-          const dx = (e.clientX - lastClientX) * dpr;
-          lastClientX = e.clientX;
-          // Horizontal-only: ignore vertical movement entirely.
-          offsetX -= dx;
-          draw();
-        });
-        function endDrag() {
-          dragging = false;
-          canvas.style.cursor = 'grab';
-        }
-        canvas.addEventListener('pointerup', endDrag);
-        canvas.addEventListener('pointercancel', endDrag);
-        canvas.addEventListener('pointerleave', () => { /* keep dragging only with capture */ });
-
-        window.addEventListener('resize', () => { resize(); draw(); });
-        window.addEventListener('beforeunload', () => {
-          try { URL.revokeObjectURL(mapUrl); } catch {}
-        });
-
-        async function load() {
-          resize();
-          const img = new Image();
-          img.decoding = 'async';
-          img.src = mapUrl;
-          try {
-            if (img.decode) await img.decode();
-            else await new Promise((res, rej) => { img.onload = () => res(); img.onerror = rej; });
-          } catch {
-            // Fall back to onload if decode fails.
-            await new Promise((res, rej) => { img.onload = () => res(); img.onerror = rej; });
-          }
-          try {
-            bitmap = await createImageBitmap(img);
-          } catch {
-            // createImageBitmap might be unavailable; use the image directly.
-            bitmap = img;
-          }
-          draw();
-        }
-
-        load().catch((err) => {
-          document.body.textContent = 'Failed to load flat map: ' + (err && err.message ? err.message : String(err));
-        });
-      })();
-    </script>
-  </body>
-</html>`;
-
-  doc.open();
-  doc.write(html);
-  doc.close();
+  const msg: FlatMapInitMsg = {
+    type: 'TFW_FLATMAP_INIT',
+    viewer: 'flatmap',
+    nonce: readyNonce,
+    title,
+    pngBlob,
+  };
+  viewerWin.postMessage(msg, '*');
 }

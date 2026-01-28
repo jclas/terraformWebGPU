@@ -1,5 +1,6 @@
 import { GlobeRenderer } from './globe';
-import { openFlatMapViewer } from './flatmap';
+import { openFlatMapWindow } from './flatmap';
+import { openWinkelTripelMapWindow } from './winkel';
 
 // Grab HTML slider for ocean surface area
 const oceanSAPercentSlider = document.getElementById('oceanSAPercent') as HTMLInputElement;
@@ -10,6 +11,7 @@ const seedInput = document.getElementById('seed-input') as HTMLInputElement;
 const generateSeedBtn = document.getElementById('generate-seed-btn') as HTMLButtonElement;
 const seedError = document.getElementById('seed-error') as HTMLElement;
 const flatMapBtn = document.getElementById('flat-map-btn') as HTMLButtonElement | null;
+const winkelMapBtn = document.getElementById('winkel-map-btn') as HTMLButtonElement | null;
 
 const canvas = document.getElementById('webgpu-canvas') as HTMLCanvasElement;
 if (!canvas) {
@@ -102,7 +104,7 @@ async function onGenerateClick(event: MouseEvent) {
 
 generateSeedBtn.onclick = onGenerateClick;
 
-async function exportFlatMap() {
+async function openFlatMap() {
   clearSeedError();
 
   const seedString = (seedDisplay.textContent || '').trim();
@@ -113,29 +115,42 @@ async function exportFlatMap() {
 
   const oceanSAFraction = Number(oceanSAPercentSlider.value) / 100;
 
-  // Open the viewer tab synchronously so popup blockers don't kill it.
-  const viewerWin = window.open(
-    'about:blank',
-    'TerraformFlatMapViewer',
-    'popup=1,width=1200,height=800,scrollbars=1,resizable=1',
-  );
-  if (!viewerWin) {
-    showSeedError('Popup blocked while opening flat map viewer.');
-    return;
-  }
-
-  await openFlatMapViewer(viewerWin, {
+  await openFlatMapWindow({
     title: `Flat Map (Seed ${seedString})`,
     seed: Number(seedString),
     oceanSAFraction,
-    sourceCanvasWidth: canvas.width,
     sourceCanvasHeight: canvas.height,
     // subdivisions: 9,
+    canvasMarginTopBottom: 50,
   });
 }
 
 flatMapBtn?.addEventListener('click', () => {
-  void exportFlatMap();
+  void openFlatMap();
+});
+
+async function openWinkelTripelMap() {
+  clearSeedError();
+
+  const seedString = (seedDisplay.textContent || '').trim();
+  if (!isValidSeed(seedString)) {
+    showSeedError('Generate a globe first (invalid seed).');
+    return;
+  }
+
+  const oceanSAFraction = Number(oceanSAPercentSlider.value) / 100;
+
+  await openWinkelTripelMapWindow({
+    title: `Winkel Tripel (Seed ${seedString})`,
+    seed: Number(seedString),
+    oceanSAFraction,
+    sourceCanvasHeight: canvas.height,
+    canvasMarginTopBottom: 50,
+  });
+}
+
+winkelMapBtn?.addEventListener('click', () => {
+  void openWinkelTripelMap();
 });
 
 // Initial page load: random seed, display, input, terraform
